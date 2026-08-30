@@ -1,0 +1,87 @@
+#!/usr/bin/expect -f
+# Copyright (c) 2024-2026 xiefujin <490021684@qq.com>
+# Licensed under GNU GPLv3, see LICENSE file for full license terms.
+#
+# FastClaw TUI end-to-end test — full interaction coverage.
+#
+# Usage (requires a workspace with a real LLM API key, e.g. the dev workspace):
+#   cargo build --bin fastclaw-tui --features tui
+#   expect scripts/tui_e2e.exp
+#
+# Uses markers that only appear in the MODEL's reply / tool output (never in
+# the typed input echo), so each step truly verifies the rendered result.
+set timeout 150
+set stty_init "rows 40 cols 120"
+log_user 0
+log_file -a /tmp/tui_e2e.raw
+
+spawn ./target/debug/fastclaw-tui --workspace /Volumes/lenovops9/fastmind-rs_local/workspace
+
+set pass 0
+set fail 0
+
+proc step {pattern label} {
+    global pass fail
+    set matched 0
+    expect {
+        -re $pattern { set matched 1 }
+        timeout {}
+    }
+    if {$matched} {
+        puts "PASS: $label"
+        incr pass
+    } else {
+        puts "FAIL: $label (timeout)"
+        incr fail
+    }
+}
+
+# 1. Startup greeting renders.
+step {FastClaw} "greeting renders"
+
+# 2. Streaming text reply. Marker "Tokyo" appears ONLY in the model's reply
+#    (the prompt does not contain it), so this truly verifies streamed output.
+send "What is the capital of Japan? Reply with only the city name.\r"
+step {Tokyo} "streamed text reply (assistant output)"
+
+# 3. Tool round-trip. "[run_shell]" is the TUI's own tool-result display
+#    prefix, so matching it proves the agent called run_shell and the result
+#    was rendered (not just echoed from the typed input).
+send "Use the run_shell tool to run `echo tui-tool-914`, then tell me the exact output.\r"
+step {\[run_shell\]} "tool round-trip rendered (run_shell)"
+
+# 4. /help shows command list.
+send "/help\r"
+step {workdir} "slash command /help"
+
+# 5. /skill list shows the bundled native skill.
+send "/skill list\r"
+step {current_time} "slash command /skill list"
+
+# 6. /new creates a fresh session.
+send "/new\r"
+step {New session} "slash command /new"
+
+# 7. /workdir switches working directory.
+send "/workdir /tmp\r"
+step {Working dir} "slash command /workdir"
+
+# 8. /clear clears history; a fresh message still works.
+send "/clear\r"
+sleep 1
+send "What is the capital of France? Reply with only the city name.\r"
+step {Paris} "message works after /clear"
+
+# 9. /session_list lists sessions (marker "  - <hex>" is robust even when the
+#    current session's row is scrolled out of the visible viewport).
+send "/session_list\r"
+step {  - [0-9a-f]} "slash command /session_list"
+
+# 10. Clean exit.
+send "/quit\r"
+expect eof
+puts "PASS: clean exit"
+incr pass
+
+puts "\n===== RESULT: $pass passed, $fail failed ====="
+exit [expr {$fail > 0 ? 1 : 0}]

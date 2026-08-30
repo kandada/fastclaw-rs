@@ -1,0 +1,65 @@
+[package]
+name = "fastclaw"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+license = "GPL-3.0-or-later"
+authors = ["xiefujin <490021684@qq.com>"]
+repository = "https://github.com/kandada/fastclaw-rs"
+description = "FastClaw: an embeddable client-side AI agent library (ReAct loop, shell/skill tools, workdir scoping) built on fastmind"
+readme = "README.md"
+keywords = ["agent", "llm", "react", "tui", "tauri"]
+categories = ["asynchronous", "command-line-interface"]
+
+[lib]
+name = "fastclaw"
+path = "src/lib.rs"
+
+[workspace]
+
+[features]
+default = ["openai", "anthropic"]
+openai = ["dep:openai-client-rs"]
+anthropic = ["dep:anthropic-client-rs"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:pulldown-cmark"]
+
+[dependencies]
+fastmind = { path = "../fastmind-rs", version = "0.1.1" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "signal", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+futures = "0.3"
+regex = "1"
+chrono = { version = "0.4", features = ["clock"] }
+dirs = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+fs2 = "0.4"
+dotenvy = { version = "0.15", optional = true }
+# Local path for development; `version` is used when publishing to crates.io.
+openai-client-rs = { path = "/Users/xiefujin_mac2025/RustroverProjects/fastshell_local/openai-rs", version = "0.1", features = ["async"], optional = true }
+anthropic-client-rs = { path = "/Users/xiefujin_mac2025/RustroverProjects/fastshell_local/anthropic-rs", version = "0.1", features = ["async"], optional = true }
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"], optional = true }
+crossterm = { version = "0.29", optional = true }
+pulldown-cmark = { version = "0.13", default-features = false, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+openai-client-rs = { path = "/Users/xiefujin_mac2025/RustroverProjects/fastshell_local/openai-rs", version = "0.1", features = ["async"] }
+anthropic-client-rs = { path = "/Users/xiefujin_mac2025/RustroverProjects/fastshell_local/anthropic-rs", version = "0.1", features = ["async"] }
+
+[[bin]]
+name = "fastclaw-tui"
+path = "src/bin/fastclaw-tui.rs"
+required-features = ["tui"]
+
+[[example]]
+name = "headless"
+path = "examples/headless.rs"
+
+[[example]]
+name = "mobile_api"
+path = "examples/mobile_api.rs"
