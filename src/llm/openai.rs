@@ -100,10 +100,28 @@ impl OpenAiProvider {
     }
 }
 
+/// Build the OpenAI message list. The host system prompt (`req.system`) MUST be
+/// sent as the first `system` message; otherwise OpenAI-compatible gateways
+/// never see the host instructions (e.g. Voya's browser-capability guide) and
+/// the model behaves like a generic shell agent.
+fn build_messages(req: &LlmRequest) -> Vec<ChatMessage> {
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(req.messages.len() + 1);
+    if let Some(sys) = req
+        .system
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        out.push(ChatMessage::system(sys.to_string()));
+    }
+    out.extend(req.messages.iter().map(to_openai_message));
+    out
+}
+
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn chat(&self, req: &LlmRequest) -> Result<LlmResponse> {
-        let messages: Vec<ChatMessage> = req.messages.iter().map(to_openai_message).collect();
+        let messages = build_messages(req);
         let tools = self.tools_slice(req);
         let mut resp = self
             .inner
@@ -133,7 +151,7 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn chat_stream(&self, req: &LlmRequest, sink: &mut dyn LlmSink) -> Result<LlmResponse> {
-        let messages: Vec<ChatMessage> = req.messages.iter().map(to_openai_message).collect();
+        let messages = build_messages(req);
         let tools = self.tools_slice(req);
 
         // Use chunk-level streaming so reasoning vs. content stay distinct
@@ -240,5 +258,119 @@ impl LlmProvider for OpenAiProvider {
             finish_reason,
             thinking_signature: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::provider::ThinkingPref;
+
+    fn request(system: Option<&str>, messages: Vec<Message>) -> LlmRequest {
+        LlmRequest {
+            system: system.map(str::to_string),
+            messages,
+            tools: vec![],
+            model: "test-model".into(),
+            max_tokens: None,
+            thinking: ThinkingPref::Adaptive,
+        }
+    }
+
+    fn as_json(m: &ChatMessage) -> serde_json::Value {
+        serde_json::to_value(m).unwrap()
+    }
+
+    /// Regression: the OpenAI gateway used to drop `req.system` entirely, so the
+    /// host instructions (Voya's browser guide) never reached the model.
+    #[test]
+    fn system_prompt_is_prepended_as_first_system_message() {
+        let req = request(Some("SYS-PROMPT"), vec![Message::user("hello")]);
+        let msgs = build_messages(&req);
+        assert_eq!(msgs.len(), 2, "system + user");
+        let first = as_json(&msgs[0]);
+        assert_eq!(first["role"], "system");
+        assert_eq!(first["content"], "SYS-PROMPT");
+        assert_eq!(as_json(&msgs[1])["role"], "user");
+    }
+
+    #[test]
+    fn missing_or_blank_system_is_skipped() {
+        assert_eq!(build_messages(&request(None, vec![Message::user("hi")])).len(), 1);
+        assert_eq!(build_messages(&request(Some("   "), vec![Message::user("hi")])).len(), 1);
+        assert_eq!(build_messages(&request(Some(""), vec![Message::user("hi")])).len(), 1);
+    }
+
+    #[test]
+    fn system_prompt_is_preserved_verbatim() {
+        let long = "A".repeat(8000);
+        let msgs = build_messages(&request(Some(&long), vec![Message::user("hi")]));
+        assert_eq!(as_json(&msgs[0])["content"], long);
+    }
+
+    #[test]
+    fn conversation_order_is_kept_after_system() {
+        let req = request(
+            Some("SYS"),
+            vec![
+                Message::user("u1"),
+                Message::assistant("a1"),
+                Message::user("u2"),
+            ],
+        );
+        let msgs = build_messages(&req);
+        let roles: Vec<String> = msgs
+            .iter()
+            .map(|m| as_json(m)["role"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(roles, vec!["system", "user", "assistant", "user"]);
+    }
+
+    #[test]
+    fn no_system_keeps_messages_unchanged() {
+        let req = request(None, vec![Message::user("only")]);
+        let msgs = build_messages(&req);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(as_json(&msgs[0])["content"], "only");
+    }
+
+    #[test]
+    fn system_only_produces_single_message() {
+        let msgs = build_messages(&request(Some("only"), vec![]));
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(as_json(&msgs[0])["role"], "system");
+        assert_eq!(as_json(&msgs[0])["content"], "only");
+    }
+
+    #[test]
+    fn no_system_and_no_messages_is_empty() {
+        assert!(build_messages(&request(None, vec![])).is_empty());
+    }
+
+    #[test]
+    fn system_is_trimmed_but_inner_newlines_kept() {
+        let msgs = build_messages(&request(
+            Some("\n  ## Host\nline1\nline2  \n"),
+            vec![Message::user("hi")],
+        ));
+        assert_eq!(as_json(&msgs[0])["content"], "## Host\nline1\nline2");
+    }
+
+    /// The host system prompt is always emitted first; a system message already
+    /// present in the conversation is preserved (no de-duplication).
+    #[test]
+    fn host_system_precedes_existing_system_message() {
+        let req = request(
+            Some("HOST"),
+            vec![Message::system("inner"), Message::user("hi")],
+        );
+        let msgs = build_messages(&req);
+        let roles: Vec<String> = msgs
+            .iter()
+            .map(|m| as_json(m)["role"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(roles, vec!["system", "system", "user"]);
+        assert_eq!(as_json(&msgs[0])["content"], "HOST");
+        assert_eq!(as_json(&msgs[1])["content"], "inner");
     }
 }

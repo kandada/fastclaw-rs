@@ -15,8 +15,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use fastclaw::{FastClaw, FastClawConfig};
-
+use fastclaw::{FastClaw, FastClawConfig, LlmGateway, PromptSection};
 mod common;
 use common::collect_events;
 
@@ -408,3 +407,82 @@ async fn matrix_multimodal_image() {
     }
     claw.stop().await.unwrap();
 }
+
+/// End-to-end proof that the host system prompt reaches a *real* gateway.
+///
+/// The only way the model can know a fresh random passphrase is if it received
+/// the system prompt carrying the injected section. This is the behavioral
+/// counterpart to the wire-level regression in `openai_system_prompt.rs`
+/// (commit `8088a09` fixed the OpenAI gateway dropping `req.system`).
+#[tokio::test]
+async fn matrix_injected_system_prompt_visible_to_model() {
+    let _guard = SERIAL.lock().await;
+    let Some(workspace) = test_workspace() else {
+        eprintln!("skipping: FASTCLAW_TEST_WORKSPACE not set");
+        return;
+    };
+    let claw = FastClaw::builder(FastClawConfig {
+        workspace_root: Some(workspace),
+        ..FastClawConfig::default()
+    })
+    .build();
+    claw.start().await.unwrap();
+
+    let agents = configured_agents(&claw);
+    assert!(!agents.is_empty(), "no agent with an API key configured");
+
+    // Commit 8088a09 specifically fixed the OpenAI gateway; surface whether the
+    // regression path is part of this workspace's coverage.
+    let openai_agents: Vec<&String> = agents
+        .iter()
+        .filter(|id| claw.get_agent(id).llm.gateway == LlmGateway::OpenAi)
+        .collect();
+    if openai_agents.is_empty() {
+        eprintln!("note: no OpenAI-gateway agent configured; OpenAI path not exercised");
+    } else {
+        eprintln!("OpenAI-gateway agents exercised: {openai_agents:?}");
+    }
+
+    for agent in agents {
+        let gateway = claw.get_agent(&agent).llm.gateway;
+        let marker = format!("ZQ{}", uuid_like());
+        let sid = claw.new_session(Some(&agent));
+        claw.set_injections(vec![PromptSection::new(
+            "Host secret directive",
+            format!(
+                "The secret passphrase for this session is exactly `{marker}`. \
+                 When the user asks for the secret passphrase, reply with exactly that \
+                 passphrase and nothing else."
+            ),
+        )]);
+
+        let mut ok = false;
+        let mut last_reply = String::new();
+        for _ in 0..2 {
+            let prompt = "What is the secret passphrase? Reply with only the passphrase.";
+            let result =
+                tokio::time::timeout(TEST_TIMEOUT, claw.run_chat(&sid, prompt, None, None)).await;
+            last_reply = result.expect("timed out");
+            let in_reply = last_reply.contains(&marker);
+            let in_history = claw.get_messages(&sid).iter().any(|m| {
+                ["content", "reasoning_content"].iter().any(|k| {
+                    m.get(*k)
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.contains(&marker))
+                        .unwrap_or(false)
+                })
+            });
+            if in_reply || in_history {
+                ok = true;
+                break;
+            }
+        }
+        assert!(
+            ok,
+            "agent '{agent}' ({gateway}) never surfaced the injected passphrase — \
+             system prompt likely not delivered to the model: {last_reply:?}"
+        );
+    }
+    claw.stop().await.unwrap();
+}
+

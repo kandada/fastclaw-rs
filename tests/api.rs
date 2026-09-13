@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use fastclaw::{FastClaw, FastClawConfig};
+use fastclaw::{FastClaw, FastClawConfig, PromptSection};
 
 mod common;
 use common::{build_claw, MockProvider, MockReply};
@@ -133,6 +133,59 @@ async fn host_tool_registered_and_usable() {
         .find(|m| m["role"] == "tool")
         .expect("tool message");
     assert!(tool_msg["content"].as_str().unwrap().contains("42"));
+    claw.stop().await.unwrap();
+}
+
+#[test]
+fn system_prompt_injection_get_append_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let claw = FastClaw::builder(FastClawConfig {
+        workspace_root: Some(dir.path().to_path_buf()),
+        ..FastClawConfig::default()
+    })
+    .build();
+
+    assert!(claw.injections().is_empty());
+
+    claw.append_injection(PromptSection::new("t1", "c1"));
+    assert_eq!(claw.injections().len(), 1);
+    assert_eq!(claw.injections()[0].title, "t1");
+
+    // `set_injections` replaces the whole list.
+    claw.set_injections(vec![PromptSection::new("t2", "c2")]);
+    let list = claw.injections();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].title, "t2");
+    assert_eq!(list[0].content, "c2");
+}
+
+#[tokio::test]
+async fn system_prompt_injection_reaches_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let (claw, mock) = build_claw(dir.path(), vec![MockReply::Text("ok".into())]);
+
+    claw.set_injections(vec![PromptSection::new(
+        "浏览器能力（fastbrowser）",
+        "你有浏览器内核 fastbrowser，可用 run_shell 命令操作网页。",
+    )]);
+    claw.start().await.unwrap();
+
+    let sid = claw.new_session(None);
+    let _ = claw.run_chat(&sid, "hi", None, None).await;
+
+    {
+        let calls = mock.calls.lock().unwrap();
+        assert!(!calls.is_empty(), "provider should be called");
+        let sys = calls[0].system.as_deref().unwrap_or("");
+        assert!(
+            sys.contains("## 浏览器能力（fastbrowser）"),
+            "injected section title missing from system prompt: {sys}"
+        );
+        assert!(
+            sys.contains("你有浏览器内核 fastbrowser"),
+            "injected content missing from system prompt: {sys}"
+        );
+    }
     claw.stop().await.unwrap();
 }
 

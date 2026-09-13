@@ -40,6 +40,7 @@ pub mod skills;
 pub mod tools;
 pub mod workspace;
 
+pub use agent::system_prompt::PromptSection;
 pub use api::{FastClaw, FastClawBuilder, FastClawConfig, StreamEvent};
 pub use config::{AgentConfig, Settings};
 pub use error::{Error, ErrorCode, Result};

@@ -21,6 +21,8 @@ fastclaw 是 [fastclaw](https://github.com/kandada/fastclaw)（Python 版）的 
   捕获并多轮回传 `thinking_signature`。
 - **两个内置工具**：`run_shell`（含 DENY / ASK / `CONFIRM:` 安全门 + 超时 + 截断）、
   `run_skills`（列表 / 查看 / 执行）。
+- **System prompt 注入**：`set_injections` / `append_injection` / `injections` 让宿主运行时注入
+  能力指南（如 fastbrowser 命令用法），每轮现读现拼、下一请求即生效，无需重绑会话。
 - **Skills**：元技能（`SKILL.md` 指令文档）+ 原生 Rust 技能（`Skill` trait）；预置的
   `skill_creator` 技能会自动 seed 到新 workspace。
 - **工作目录（WorkDir）**：注册 / 绑定 / 默认三级解析，`run_shell` 的 `cwd` 与安全判定均受约束。
@@ -84,6 +86,19 @@ let img = ImagePart::from_url("https://example.com/photo.png");   // OpenAI 网�
 let img = ImagePart::from_base64("image/png", "...base64...");    // Anthropic 网关要求 base64
 
 claw.chat_with_images(&session, "图片里是什么？", &[img]).await?;
+```
+
+System prompt 注入（宿主能力感知，每轮生效）：
+
+```rust
+use fastclaw::PromptSection;
+
+claw.set_injections(vec![PromptSection::new(
+    "浏览器能力（fastbrowser）",
+    "你有浏览器内核 fastbrowser，可用 run_shell 命令操作网页：\n- 感知：fastbrowser snapshot\n- 动作：fastbrowser click a / type e \"文字\"\n- 截图：fastbrowser screenshot <路径>\n完整命令表：fastbrowser --help",
+)]);
+claw.append_injection(PromptSection::new("安全提示", "不要运行 rm -rf /"));
+let sections = claw.injections(); // Vec<PromptSection>
 ```
 
 ## Skills

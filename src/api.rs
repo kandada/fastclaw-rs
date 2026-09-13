@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::agent::{build_graph, AgentRuntime};
+use crate::agent::{build_graph, system_prompt::PromptSection, AgentRuntime};
 use crate::config::{self, load_settings, save_settings, AgentConfig, Settings};
 use crate::error::{Error, Result};
 use crate::llm::LlmGateway;
@@ -375,6 +375,29 @@ impl FastClaw {
     pub fn clear_messages(&self, session_id: &str) {
         let file = self.paths.session_messages_file(session_id);
         let _ = std::fs::remove_file(file);
+    }
+
+    // ── system-prompt injection ─────────────────────────────────────────────
+
+    /// Replace all host-injected system-prompt sections.
+    ///
+    /// Injections are held in memory on this `FastClaw` instance, re-read on
+    /// every LLM round, and take effect from the next request — no session
+    /// rebind needed. Useful for hosts that must make the agent stably aware
+    /// of host capabilities (e.g. a `fastbrowser` command guide) without
+    /// touching the per-agent personality files.
+    pub fn set_injections(&self, sections: Vec<PromptSection>) {
+        self.runtime.set_injections(sections);
+    }
+
+    /// Append a single host-injected system-prompt section.
+    pub fn append_injection(&self, section: PromptSection) {
+        self.runtime.append_injection(section);
+    }
+
+    /// The currently injected system-prompt sections.
+    pub fn injections(&self) -> Vec<PromptSection> {
+        self.runtime.injections()
     }
 
     // ── skills / agents / settings ──────────────────────────────────────────

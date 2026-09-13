@@ -3,6 +3,29 @@
 
 //! FastClaw system prompt template.
 
+use serde::{Deserialize, Serialize};
+
+/// A host-injectable section appended to the system prompt, after the
+/// per-agent personality (`SOUL.md` / `USER.md` / `AGENT.md`).
+///
+/// Unlike personality files (which are bound once per session and cached),
+/// injections are held in memory on the `FastClaw` instance, re-read on every
+/// LLM round, and take effect from the next request — no session rebind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptSection {
+    pub title: String,
+    pub content: String,
+}
+
+impl PromptSection {
+    pub fn new(title: impl Into<String>, content: impl Into<String>) -> Self {
+        PromptSection {
+            title: title.into(),
+            content: content.into(),
+        }
+    }
+}
+
 /// The system prompt template. Placeholders:
 /// `{skills_list}`, `{session_id}`, `{extra_workspaces}`, `{workspace_path}`,
 /// `{workdir}`.
@@ -87,6 +110,10 @@ Execute necessary commands promptly without asking the user unnecessarily. When 
 "#;
 
 /// Format the system prompt with the given dynamic values.
+///
+/// Layout order: template → personality → host injections. Each injection with
+/// non-empty content is appended as `## {title}` + content (or bare content
+/// when the title is empty).
 pub fn format_system_prompt(
     skills_list: &str,
     session_id: &str,
@@ -94,6 +121,7 @@ pub fn format_system_prompt(
     work_dirs: &[String],
     workspace_path: &str,
     workdir: &str,
+    injections: &[PromptSection],
 ) -> String {
     let extra = if work_dirs.is_empty() {
         "(not configured)".to_string()
@@ -109,5 +137,173 @@ pub fn format_system_prompt(
     if !personality.is_empty() {
         prompt.push_str(&format!("\n\n{personality}"));
     }
+    for sec in injections {
+        let content = sec.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        let title = sec.title.trim();
+        if title.is_empty() {
+            prompt.push_str(&format!("\n\n{content}"));
+        } else {
+            prompt.push_str(&format!("\n\n## {title}\n{content}"));
+        }
+    }
     prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn injections_appended_after_personality() {
+        let prompt = format_system_prompt(
+            "- a: skill",
+            "s1",
+            "## SOUL\nbe nice",
+            &[],
+            "/ws",
+            "/work",
+            &[PromptSection::new(
+                "浏览器能力（fastbrowser）",
+                "你有浏览器内核 fastbrowser。",
+            )],
+        );
+        assert!(prompt.contains("## SOUL\nbe nice"));
+        assert!(prompt.contains("\n\n## 浏览器能力（fastbrowser）\n你有浏览器内核 fastbrowser。"));
+        assert!(prompt.ends_with("你有浏览器内核 fastbrowser。"));
+    }
+
+    #[test]
+    fn empty_injections_are_skipped() {
+        let prompt = format_system_prompt("- a: skill", "s1", "", &[], "/ws", "/work", &[]);
+        // Nothing appended after the base template when there are no injections.
+        assert!(prompt
+            .trim_end()
+            .ends_with("- When unsure which language to use, prefer English."));
+    }
+
+    #[test]
+    fn empty_title_renders_bare_content() {
+        let prompt = format_system_prompt(
+            "- a: skill",
+            "s1",
+            "",
+            &[],
+            "/ws",
+            "/work",
+            &[PromptSection::new("", "just a note")],
+        );
+        assert!(prompt.ends_with("just a note"));
+    }
+
+    #[test]
+    fn multiple_injections_render_in_order() {
+        let prompt = format_system_prompt(
+            "- a: skill",
+            "s1",
+            "",
+            &[],
+            "/ws",
+            "/work",
+            &[
+                PromptSection::new("t1", "c1"),
+                PromptSection::new("t2", "c2"),
+            ],
+        );
+        let i1 = prompt.find("## t1\nc1").expect("t1");
+        let i2 = prompt.find("## t2\nc2").expect("t2");
+        assert!(i1 < i2, "sections must keep insertion order");
+    }
+
+    #[test]
+    fn duplicate_titles_render_twice() {
+        let prompt = format_system_prompt(
+            "- a: skill",
+            "s1",
+            "",
+            &[],
+            "/ws",
+            "/work",
+            &[PromptSection::new("dup", "first"), PromptSection::new("dup", "second")],
+        );
+        assert_eq!(prompt.matches("## dup").count(), 2);
+    }
+
+    #[test]
+    fn title_and_content_are_trimmed() {
+        let prompt = format_system_prompt(
+            "- a: skill",
+            "s1",
+            "",
+            &[],
+            "/ws",
+            "/work",
+            &[PromptSection::new("  spaced  ", "\n body \n")],
+        );
+        assert!(prompt.contains("## spaced\nbody"));
+    }
+
+    #[test]
+    fn whitespace_title_renders_bare_content() {
+        let prompt = format_system_prompt(
+            "- a: skill",
+            "s1",
+            "",
+            &[],
+            "/ws",
+            "/work",
+            &[PromptSection::new("   ", "bare body")],
+        );
+        assert!(prompt.ends_with("\n\nbare body"));
+    }
+
+    #[test]
+    fn injection_content_is_not_placeholder_substituted() {
+        // The template substitution pass happens before injections are appended,
+        // so placeholder-looking text in an injection survives verbatim.
+        let prompt = format_system_prompt(
+            "- a: skill",
+            "s1",
+            "",
+            &[],
+            "/ws",
+            "/work",
+            &[PromptSection::new(
+                "literal",
+                "keep {session_id} {workdir} {skills_list}",
+            )],
+        );
+        assert!(prompt.contains("keep {session_id} {workdir} {skills_list}"));
+    }
+
+    #[test]
+    fn injections_apply_without_personality() {
+        let prompt = format_system_prompt(
+            "- a: skill",
+            "s1",
+            "",
+            &[],
+            "/ws",
+            "/work",
+            &[PromptSection::new("t", "c")],
+        );
+        assert!(prompt.ends_with("## t\nc"));
+    }
+
+    #[test]
+    fn large_unicode_content_is_preserved() {
+        let content = "能力：浏览器 🦞".repeat(2000);
+        let prompt = format_system_prompt(
+            "- a: skill",
+            "s1",
+            "",
+            &[],
+            "/ws",
+            "/work",
+            &[PromptSection::new("big", content.clone())],
+        );
+        assert!(prompt.contains(&content));
+    }
 }

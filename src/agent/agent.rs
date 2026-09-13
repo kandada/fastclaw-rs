@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 use fastmind::{Event, EventBuffer, Graph, Node, NodeOutput, State, ToolRegistry, Value};
 use serde_json::json;
 
-use crate::agent::system_prompt::format_system_prompt;
+use crate::agent::system_prompt::{format_system_prompt, PromptSection};
 use crate::config::{
     load_agent_config, load_agent_personality, resolve_session_agent_id, AgentConfig, Settings,
 };
@@ -32,6 +32,7 @@ pub struct AgentRuntime {
     pub tool_registry: Arc<ToolRegistry>,
     providers: RwLock<HashMap<String, Arc<dyn LlmProvider>>>,
     mock: RwLock<Option<Arc<dyn LlmProvider>>>,
+    injections: RwLock<Vec<PromptSection>>,
 }
 
 impl AgentRuntime {
@@ -52,7 +53,32 @@ impl AgentRuntime {
             tool_registry,
             providers: RwLock::new(HashMap::new()),
             mock: RwLock::new(None),
+            injections: RwLock::new(Vec::new()),
         })
+    }
+
+    // ── system-prompt injection ─────────────────────────────────────────────
+
+    /// Replace all host-injected system-prompt sections.
+    pub fn set_injections(&self, sections: Vec<PromptSection>) {
+        if let Ok(mut g) = self.injections.write() {
+            *g = sections;
+        }
+    }
+
+    /// Append a single host-injected system-prompt section.
+    pub fn append_injection(&self, section: PromptSection) {
+        if let Ok(mut g) = self.injections.write() {
+            g.push(section);
+        }
+    }
+
+    /// The currently injected system-prompt sections.
+    pub fn injections(&self) -> Vec<PromptSection> {
+        self.injections
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// Inject a fallback provider (used by tests and when no API key is set).
@@ -349,6 +375,7 @@ async fn agent_loop(runtime: &AgentRuntime, state: &mut State, event: &Event) ->
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let injections = runtime.injections();
     let work_dirs: Vec<String> = agent_config
         .work_dirs
         .iter()
@@ -365,6 +392,7 @@ async fn agent_loop(runtime: &AgentRuntime, state: &mut State, event: &Event) ->
         &work_dirs,
         &workspace_path,
         &workdir.to_string_lossy(),
+        &injections,
     );
 
     // Build request.

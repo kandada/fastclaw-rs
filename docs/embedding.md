@@ -56,4 +56,35 @@ claw.run_chat(
 ).await;
 ```
 
+## System prompt 注入（宿主能力感知）
+
+人格（`SOUL.md` / `USER.md` / `AGENT.md`）是**按会话绑定、绑定后缓存**的静态内容。若宿主需要在
+运行时动态注入 system prompt（如告诉 agent 本宿主有哪些能力、命令怎么用），请用注入接口——它存在
+`FastClaw` 实例内存中，**每轮 LLM 请求现读现拼**，下一次请求即生效，无需重绑会话，天然按
+Profile（一个 Profile = 一个 `FastClaw` 实例）隔离。
+
+```rust
+use fastclaw::PromptSection;
+
+// 覆盖整组注入章节
+claw.set_injections(vec![PromptSection::new(
+    "浏览器能力（fastbrowser）",
+    "你有浏览器内核 fastbrowser，可用 run_shell 命令操作网页：\n\
+     - 感知：fastbrowser snapshot\n\
+     - 动作：fastbrowser click a / type e \"文字\"\n\
+     - 截图：fastbrowser screenshot <路径>\n\
+     完整命令表：fastbrowser --help",
+)]);
+
+// 或追加单章
+claw.append_injection(PromptSection::new("安全提示", "不要运行 rm -rf /"));
+
+// 读取当前注入
+let sections: Vec<PromptSection> = claw.injections();
+```
+
+注入章节渲染在 system prompt 的**personality 之后**，以 `## {title}` + content 追加；空 content 跳过。
+内存版已满足多数宿主（重启后由宿主重新注入）；如需要持久化到 `metadata.json`，可在
+`AgentConfig` 上自行扩展。
+
 完整可运行示例见 `examples/mobile_api.rs`。
